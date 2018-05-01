@@ -1,7 +1,6 @@
 package util.cassandra
 
 import java.net.InetAddress
-import java.util.concurrent.Semaphore
 
 import com.datastax.driver.core.Cluster
 import org.apache.hadoop.fs.Path
@@ -9,34 +8,9 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import util.{FsUtils, SparklesTask}
 
-import scala.collection.mutable
 
-object ExportToCassandraTaskObj{
-
-  private val concurrentCassandraExportJobs=mutable.HashMap[String, Semaphore]()
-
-  private def getSem(tableName:String)={
-    this.synchronized{
-      var sem:Semaphore=concurrentCassandraExportJobs.getOrElse(tableName,null)
-      if(sem==null){
-        sem=new Semaphore(1)
-        concurrentCassandraExportJobs.put(tableName, sem)
-      }
-      sem
-    }
-  }
-
-  def getLock(tableName:String)={
-    getSem(tableName).acquire()
-  }
-
-  def unlock(tableName:String)={
-    getSem(tableName).release()
-  }
-}
-
-class ExportToCassandraTaskObj(session:SparkSession, inputPathStr:String, keyspace:String, tableName:String,
-                               keys:Array[String], timeToLive:Int, gcGraceSeconds:Int) extends SparklesTask with Runnable{
+class SSTableExporter(session:SparkSession, inputPathStr:String, keyspace:String, tableName:String,
+                      keys:Array[String], timeToLive:Int, gcGraceSeconds:Int) extends SparklesTask with Runnable{
 
   override def run(): Unit = {
 
@@ -44,7 +18,7 @@ class ExportToCassandraTaskObj(session:SparkSession, inputPathStr:String, keyspa
     val doneFlagPath=new Path(doneFlagPathStr)
     if(!FsUtils.getFs().exists(doneFlagPath)){
       try{
-        ExportToCassandraTaskObj.getLock(tableName)
+        ExporterLock.getLock(tableName)
 
         logger.info("Start exporting results to cassandra [ "+ inputPathStr+" ] => "+keyspace+"."+tableName)
 
@@ -66,14 +40,14 @@ class ExportToCassandraTaskObj(session:SparkSession, inputPathStr:String, keyspa
         val insertStatement="insert into "+keyspace+"."+tableName+" ("+fieldsDesc+") values ("+valuesHolder+")"
         val createTableStatement=getCreateTableStatement(keyspace, tableName, df, keys, timeToLive, gcGraceSeconds)
 
-        val conf=ExportToCassandraConf(
+        val conf=ExporterConf(
           keyspace, tableName, insertStatement, createTableStatement, cassHosts,
           throughputInMBits,throughputBufferSize, InetAddress.getLocalHost().getHostName()
         )
-        val exportConfBC=sparkContext.broadcast[ExportToCassandraConf](conf)
+        val exportConfBC=sparkContext.broadcast[ExporterConf](conf)
 
         df.repartition(writePartitions).sortWithinPartitions(df.schema.fields(0).name).rdd.mapPartitions(
-          it=> ExportToCassandraProcessor.process(it, exportConfBC)
+          it=> SSTableExportProcessor.process(it, exportConfBC)
         ).count()
 
         exportConfBC.destroy()
@@ -82,7 +56,7 @@ class ExportToCassandraTaskObj(session:SparkSession, inputPathStr:String, keyspa
 
         logger.info("Finished exporting results to cassandra [ "+ inputPathStr+" ] => "+keyspace+"."+tableName)
       }finally{
-        ExportToCassandraTaskObj.unlock(tableName)
+        ExporterLock.unlock(tableName)
       }
     }
   }

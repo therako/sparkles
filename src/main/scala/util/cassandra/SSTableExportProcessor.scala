@@ -16,8 +16,8 @@ import scala.collection.mutable
 import scala.sys.process._
 import scala.util.Random
 
-object ExportToCassandraProcessor{
-  def process(it:Iterator[Row], exportConfBC:Broadcast[ExportToCassandraConf]):Iterator[Row]={
+object SSTableExportProcessor{
+  def process(it:Iterator[Row], exportConfBC:Broadcast[ExporterConf]):Iterator[Row]={
     if(it.hasNext){
       val exportConf=exportConfBC.value
       val uuid=UUID.randomUUID().toString

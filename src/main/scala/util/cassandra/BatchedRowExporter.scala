@@ -1,23 +1,17 @@
 
 package util.cassandra
 
-import java.util.concurrent.Semaphore
-
 import com.datastax.driver.core.Cluster
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
 import util.{FsUtils, SparklesTask}
 
-object ExportToCassandraTask{
-  val lock=new Semaphore(1)
-}
-
-class BatchedExportToCassandraTask(session:SparkSession, inputPathStr:String, keyspace:String,
-                                   table:String, primaryKey:Array[String]) extends SparklesTask with Runnable{
+class BatchedRowExporter(session:SparkSession, inputPathStr:String, keyspace:String,
+                         table:String, primaryKey:Array[String]) extends SparklesTask with Runnable{
 
   override def run(): Unit = {
-    ExportToCassandraTaskObj.getLock(table)
+    ExporterLock.getLock(table)
 
     val doneFlagPathStr=inputPathStr+"_exported_to_cass"
     val doneFlagPath=new Path(doneFlagPathStr)
@@ -33,7 +27,7 @@ class BatchedExportToCassandraTask(session:SparkSession, inputPathStr:String, ke
         Map("keyspace" -> keyspace, "table" -> table)).mode(SaveMode.Append).save()
       FsUtils.getFs().mkdirs(doneFlagPath)
     }
-    ExportToCassandraTaskObj.unlock(table)
+    ExporterLock.unlock(table)
   }
 
   private def createTableFromDataFrame(keyspace:String, tableName:String, df:DataFrame, keys:Array[String],
